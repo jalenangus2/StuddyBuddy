@@ -1,0 +1,1195 @@
+#!/usr/bin/env python3
+"""
+StudyBuddy — Complete Study Suite
+Run: python slide_quiz.py
+Then open http://localhost:8765
+
+Requirements:
+  pip install python-pptx pypdf
+"""
+
+import http.server
+import json
+import socketserver
+import urllib.request
+import urllib.error
+from io import BytesIO
+
+PORT = 8765
+
+MODELS = [
+    {"id": "claude-haiku-4-5-20251001", "label": "Haiku 4.5",  "badge": "Fastest · ~$0.00001/session", "default": True},
+    {"id": "claude-sonnet-4-6",          "label": "Sonnet 4.6", "badge": "Balanced · ~$0.00006/session", "default": False},
+    {"id": "claude-opus-4-7",            "label": "Opus 4.7",   "badge": "Powerful · ~$0.00030/session", "default": False},
+]
+
+# ──────────────────────────────────────────────────────────────────────────────
+HTML = r"""<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>StudyBuddy</title>
+<link href="https://fonts.googleapis.com/css2?family=Playfair+Display:wght@400;700;900&family=DM+Sans:wght@300;400;500&display=swap" rel="stylesheet">
+<style>
+:root {
+  --cream:#F7F3EE; --warm-white:#FDFAF7; --ink:#1A1510; --brown:#6B4C2A;
+  --gold:#C4922A; --gold-light:#E8C97A; --rust:#C45C2A; --sage:#4A6741;
+  --border:#DDD5C8; --shadow:rgba(26,21,16,0.08);
+}
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:'DM Sans',sans-serif;background:var(--cream);color:var(--ink);min-height:100vh}
+body::before{content:'';position:fixed;inset:0;background:
+  radial-gradient(ellipse 80% 50% at 20% 10%,rgba(196,146,42,.06) 0%,transparent 60%),
+  radial-gradient(ellipse 60% 40% at 80% 90%,rgba(196,92,42,.05) 0%,transparent 60%);
+  pointer-events:none;z-index:0}
+.container{max-width:820px;margin:0 auto;padding:0 24px 80px;position:relative;z-index:1}
+
+/* Header */
+header{padding:48px 0 40px;text-align:center;border-bottom:1px solid var(--border);margin-bottom:40px}
+.logo-icon{width:36px;height:36px;background:var(--ink);border-radius:8px;display:inline-flex;align-items:center;justify-content:center;font-size:18px;margin-bottom:14px}
+h1{font-family:'Playfair Display',serif;font-size:clamp(2rem,5vw,3rem);font-weight:900;letter-spacing:-.02em}
+h1 span{color:var(--gold)}
+.tagline{margin-top:10px;color:var(--brown);font-size:.9rem;font-weight:300;letter-spacing:.04em}
+
+/* Config row */
+.config-row{background:var(--warm-white);border:1px solid var(--border);border-radius:12px;padding:20px 24px;margin-bottom:28px;display:flex;gap:16px;align-items:flex-end;flex-wrap:wrap}
+.config-field{flex:1;min-width:200px}
+label{display:block;font-size:.75rem;font-weight:500;letter-spacing:.08em;text-transform:uppercase;color:var(--brown);margin-bottom:7px}
+input[type="password"],input[type="text"],input[type="date"]{width:100%;padding:11px 14px;border:1px solid var(--border);border-radius:8px;background:var(--cream);color:var(--ink);font-family:'DM Sans',sans-serif;font-size:.88rem;outline:none;transition:border-color .2s}
+input:focus{border-color:var(--gold)}
+.model-pills{display:flex;gap:6px;flex-wrap:wrap}
+.m-pill{padding:8px 14px;border:1.5px solid var(--border);border-radius:20px;cursor:pointer;background:var(--cream);transition:all .15s;font-size:.8rem;font-weight:500;white-space:nowrap}
+.m-pill:hover{border-color:var(--gold)}
+.m-pill.active{border-color:var(--gold);background:rgba(196,146,42,.12);color:var(--brown)}
+.m-pill small{display:block;font-size:.68rem;opacity:.65;font-weight:400;margin-top:1px}
+
+/* Upload */
+.upload-area{border:2px dashed var(--border);border-radius:14px;padding:44px 28px;text-align:center;cursor:pointer;transition:all .25s;background:var(--warm-white);margin-bottom:24px;position:relative}
+.upload-area:hover,.upload-area.dragover{border-color:var(--gold);background:rgba(196,146,42,.04)}
+.upload-area input[type="file"]{position:absolute;inset:0;opacity:0;cursor:pointer;width:100%;height:100%}
+.upload-icon{font-size:2.4rem;margin-bottom:12px;display:block}
+.upload-title{font-family:'Playfair Display',serif;font-size:1.15rem;font-weight:700;margin-bottom:6px}
+.upload-sub{color:var(--brown);font-size:.83rem}
+.file-badge{margin-top:12px;display:inline-flex;align-items:center;gap:6px;background:rgba(196,146,42,.12);color:var(--brown);padding:5px 12px;border-radius:20px;font-size:.82rem;font-weight:500}
+
+/* Tool tabs */
+.tools-section{display:none;margin-bottom:0}
+.tab-bar{display:flex;gap:0;overflow-x:auto;border-bottom:2px solid var(--border);margin-bottom:32px;scrollbar-width:none}
+.tab-bar::-webkit-scrollbar{display:none}
+.tab-btn{padding:12px 18px;border:none;background:none;font-family:'DM Sans',sans-serif;font-size:.85rem;font-weight:500;color:var(--brown);cursor:pointer;white-space:nowrap;border-bottom:2px solid transparent;margin-bottom:-2px;transition:all .2s;display:flex;align-items:center;gap:6px}
+.tab-btn:hover{color:var(--ink)}
+.tab-btn.active{color:var(--gold);border-bottom-color:var(--gold);font-weight:600}
+.tab-panel{display:none}
+.tab-panel.active{display:block;animation:fadeUp .35s ease}
+
+/* Buttons */
+.btn{padding:14px 22px;border:none;border-radius:9px;font-family:'DM Sans',sans-serif;font-size:.9rem;font-weight:500;cursor:pointer;transition:all .2s;display:inline-flex;align-items:center;justify-content:center;gap:7px}
+.btn:disabled{opacity:.35;cursor:not-allowed}
+.btn-primary{background:var(--ink);color:var(--cream)}
+.btn-primary:hover:not(:disabled){background:var(--brown);transform:translateY(-1px);box-shadow:0 4px 14px var(--shadow)}
+.btn-secondary{background:var(--warm-white);color:var(--ink);border:1px solid var(--border)}
+.btn-secondary:hover:not(:disabled){border-color:var(--gold);background:rgba(196,146,42,.06);transform:translateY(-1px)}
+.btn-full{width:100%}
+.btn-sm{padding:9px 16px;font-size:.82rem}
+
+/* Loading */
+.loading{text-align:center;padding:40px;display:none}
+.spinner{width:36px;height:36px;border:3px solid var(--border);border-top-color:var(--gold);border-radius:50%;animation:spin .8s linear infinite;margin:0 auto 14px}
+@keyframes spin{to{transform:rotate(360deg)}}
+.loading-text{color:var(--brown);font-size:.88rem}
+
+/* Cards */
+.result-card{background:var(--warm-white);border:1px solid var(--border);border-radius:14px;overflow:hidden;margin-bottom:24px;animation:fadeUp .4s ease}
+.card-hd{padding:18px 24px;border-bottom:1px solid var(--border);display:flex;align-items:center;gap:10px;background:rgba(196,146,42,.05)}
+.card-hd-icon{font-size:1.1rem}
+.card-hd-title{font-family:'Playfair Display',serif;font-size:1rem;font-weight:700}
+.card-hd-actions{margin-left:auto;display:flex;gap:8px}
+.card-body{padding:24px}
+.prose{line-height:1.8;font-size:.92rem;white-space:pre-wrap;color:var(--ink)}
+
+/* Glossary */
+.glossary-list{display:flex;flex-direction:column;gap:12px}
+.glossary-item{border:1px solid var(--border);border-radius:10px;overflow:hidden}
+.glossary-term{padding:12px 16px;background:rgba(196,146,42,.07);font-weight:600;font-size:.9rem;display:flex;justify-content:space-between;align-items:center;cursor:pointer;user-select:none}
+.glossary-def{padding:12px 16px;font-size:.88rem;line-height:1.7;color:var(--ink);display:none}
+.glossary-item.open .glossary-def{display:block}
+.glossary-item.open .g-arrow{transform:rotate(180deg)}
+.g-arrow{transition:transform .2s;font-size:.75rem;opacity:.5}
+
+/* Flashcards */
+.fc-controls{display:flex;align-items:center;justify-content:space-between;margin-bottom:14px}
+.fc-counter{font-size:.78rem;font-weight:500;letter-spacing:.08em;text-transform:uppercase;color:var(--brown)}
+.fc-wrapper{perspective:1000px;height:200px;margin-bottom:14px;cursor:pointer}
+.fc{width:100%;height:100%;position:relative;transform-style:preserve-3d;transition:transform .5s cubic-bezier(.4,0,.2,1);border-radius:14px}
+.fc.flipped{transform:rotateY(180deg)}
+.fc-face{position:absolute;inset:0;backface-visibility:hidden;border-radius:14px;display:flex;flex-direction:column;align-items:center;justify-content:center;padding:28px;text-align:center;border:1px solid var(--border)}
+.fc-front{background:var(--warm-white)}
+.fc-back{background:var(--ink);color:var(--cream);transform:rotateY(180deg)}
+.fc-hint{font-size:.7rem;letter-spacing:.1em;text-transform:uppercase;opacity:.4;margin-bottom:10px;font-weight:500}
+.fc-term{font-family:'Playfair Display',serif;font-size:1.2rem;font-weight:700;line-height:1.4}
+.fc-def{font-size:.88rem;line-height:1.65;opacity:.88}
+.fc-nav{display:flex;gap:8px;justify-content:center;margin-bottom:12px}
+.sr-btns{display:flex;gap:8px;justify-content:center;display:none}
+.sr-btn-know{background:rgba(74,103,65,.12);color:var(--sage);border:1px solid var(--sage);border-radius:8px;padding:8px 18px;font-size:.83rem;cursor:pointer;font-family:'DM Sans',sans-serif}
+.sr-btn-review{background:rgba(196,146,42,.12);color:var(--brown);border:1px solid var(--gold);border-radius:8px;padding:8px 18px;font-size:.83rem;cursor:pointer;font-family:'DM Sans',sans-serif}
+
+/* Fill-in-blank */
+.fib-block{background:var(--warm-white);border:1px solid var(--border);border-radius:12px;padding:22px;margin-bottom:12px}
+.fib-block.correct{border-color:var(--sage);background:rgba(74,103,65,.04)}
+.fib-block.wrong{border-color:var(--rust);background:rgba(196,92,42,.04)}
+.fib-num{font-size:.72rem;font-weight:500;letter-spacing:.1em;text-transform:uppercase;color:var(--gold);margin-bottom:8px}
+.fib-sentence{font-size:.95rem;line-height:1.7;margin-bottom:14px}
+.fib-input-row{display:flex;gap:8px;align-items:center}
+.fib-input{flex:1;padding:9px 13px;border:1px solid var(--border);border-radius:7px;font-family:'DM Sans',sans-serif;font-size:.88rem;background:var(--cream);color:var(--ink);outline:none}
+.fib-input:focus{border-color:var(--gold)}
+.fib-hint{font-size:.78rem;color:var(--brown);margin-top:8px;opacity:.7}
+.fib-feedback{margin-top:10px;padding:9px 13px;border-radius:7px;font-size:.85rem;display:none}
+.fib-feedback.correct{background:rgba(74,103,65,.1);color:var(--sage)}
+.fib-feedback.wrong{background:rgba(196,92,42,.1);color:var(--rust)}
+
+/* Quiz */
+.q-controls{display:flex;align-items:center;gap:10px;margin-bottom:20px;flex-wrap:wrap}
+.diff-pills{display:flex;gap:6px}
+.diff-pill{padding:7px 16px;border:1.5px solid var(--border);border-radius:20px;cursor:pointer;background:var(--cream);font-size:.8rem;font-weight:500;transition:all .15s;font-family:'DM Sans',sans-serif}
+.diff-pill.active{border-color:var(--gold);background:rgba(196,146,42,.12);color:var(--brown)}
+.question-block{background:var(--warm-white);border:1px solid var(--border);border-radius:12px;padding:24px;margin-bottom:14px;transition:border-color .2s}
+.question-block.correct{border-color:var(--sage);background:rgba(74,103,65,.04)}
+.question-block.incorrect{border-color:var(--rust);background:rgba(196,92,42,.04)}
+.q-num{font-size:.72rem;font-weight:500;letter-spacing:.1em;text-transform:uppercase;color:var(--gold);margin-bottom:9px}
+.q-text{font-family:'Playfair Display',serif;font-size:1rem;font-weight:700;line-height:1.5;margin-bottom:18px}
+.options{display:flex;flex-direction:column;gap:9px}
+.option{display:flex;align-items:center;gap:11px;padding:11px 14px;border:1px solid var(--border);border-radius:8px;cursor:pointer;transition:all .15s;font-size:.9rem;background:var(--cream)}
+.option:hover:not(.disabled){border-color:var(--gold);background:rgba(196,146,42,.06)}
+.option.correct-ans{border-color:var(--sage);background:rgba(74,103,65,.1);color:var(--sage);font-weight:500}
+.option.wrong-ans{border-color:var(--rust);background:rgba(196,92,42,.1);color:var(--rust)}
+.opt-letter{width:24px;height:24px;border-radius:50%;background:var(--border);display:flex;align-items:center;justify-content:center;font-size:.72rem;font-weight:700;flex-shrink:0}
+.option.correct-ans .opt-letter{background:var(--sage);color:white}
+.option.wrong-ans .opt-letter{background:var(--rust);color:white}
+.q-feedback{margin-top:12px;padding:10px 14px;border-radius:7px;font-size:.85rem;line-height:1.6;display:none}
+.q-feedback.correct{background:rgba(74,103,65,.1);color:var(--sage)}
+.q-feedback.incorrect{background:rgba(196,92,42,.1);color:var(--rust)}
+.score-banner{background:var(--ink);color:var(--cream);border-radius:14px;padding:32px;text-align:center;margin-top:20px;display:none;animation:fadeUp .4s ease}
+.score-num{font-family:'Playfair Display',serif;font-size:3.5rem;font-weight:900;color:var(--gold-light);line-height:1;margin-bottom:6px}
+.score-lbl{font-size:.88rem;opacity:.65;margin-bottom:20px}
+.score-msg{font-family:'Playfair Display',serif;font-size:1.1rem;font-weight:700;margin-bottom:20px}
+
+/* Study plan */
+.sp-date-row{display:flex;gap:10px;align-items:flex-end;margin-bottom:24px;flex-wrap:wrap}
+.sp-date-row .config-field{flex:0 0 200px}
+.sp-timeline{display:flex;flex-direction:column;gap:0}
+.sp-day{border-left:2px solid var(--border);padding:0 0 24px 20px;position:relative}
+.sp-day::before{content:'';width:10px;height:10px;border-radius:50%;background:var(--gold);position:absolute;left:-6px;top:4px}
+.sp-day-label{font-weight:600;font-size:.88rem;color:var(--brown);margin-bottom:8px}
+.sp-task{background:var(--cream);border:1px solid var(--border);border-radius:8px;padding:10px 14px;font-size:.86rem;margin-bottom:6px;line-height:1.5}
+
+/* Chat */
+.chat-messages{display:flex;flex-direction:column;gap:12px;margin-bottom:16px;max-height:380px;overflow-y:auto;padding-right:4px}
+.chat-msg{padding:12px 16px;border-radius:10px;font-size:.9rem;line-height:1.7;max-width:90%}
+.chat-msg.user{background:var(--ink);color:var(--cream);align-self:flex-end;border-radius:10px 10px 2px 10px}
+.chat-msg.assistant{background:var(--warm-white);border:1px solid var(--border);align-self:flex-start;border-radius:10px 10px 10px 2px}
+.chat-msg.assistant.thinking{opacity:.6;font-style:italic}
+.chat-input-row{display:flex;gap:8px}
+.chat-input-row input{flex:1}
+.chat-note{font-size:.75rem;color:var(--brown);opacity:.65;margin-top:8px;text-align:center}
+
+/* Compare */
+.compare-upload{border:2px dashed var(--border);border-radius:12px;padding:28px;text-align:center;cursor:pointer;background:var(--warm-white);position:relative;margin-bottom:16px;transition:all .25s}
+.compare-upload:hover{border-color:var(--gold);background:rgba(196,146,42,.04)}
+.compare-upload input{position:absolute;inset:0;opacity:0;cursor:pointer;width:100%;height:100%}
+.compare-grid{display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-bottom:16px}
+.compare-col{background:var(--warm-white);border:1px solid var(--border);border-radius:12px;padding:18px}
+.compare-col-title{font-family:'Playfair Display',serif;font-size:.95rem;font-weight:700;margin-bottom:12px;padding-bottom:10px;border-bottom:1px solid var(--border)}
+.compare-tag{display:inline-block;background:rgba(196,146,42,.1);color:var(--brown);border-radius:6px;padding:4px 10px;font-size:.78rem;margin:3px;font-weight:500}
+.compare-tag.shared{background:rgba(74,103,65,.1);color:var(--sage)}
+.compare-relationship{font-size:.85rem;line-height:1.6;padding:10px 14px;background:var(--cream);border:1px solid var(--border);border-radius:8px;margin-bottom:8px}
+@media(max-width:580px){.compare-grid{grid-template-columns:1fr}}
+
+/* Progress dashboard */
+.progress-section{margin-top:40px;border:1px solid var(--border);border-radius:14px;overflow:hidden}
+.progress-hd{padding:16px 22px;display:flex;align-items:center;justify-content:space-between;cursor:pointer;background:var(--warm-white);user-select:none}
+.progress-hd-title{font-family:'Playfair Display',serif;font-weight:700;font-size:.95rem}
+.progress-body{padding:22px;border-top:1px solid var(--border)}
+.progress-empty{text-align:center;color:var(--brown);opacity:.6;font-size:.88rem;padding:16px 0}
+.progress-bars{display:flex;flex-direction:column;gap:10px}
+.prog-row{display:flex;align-items:center;gap:12px}
+.prog-label{font-size:.78rem;color:var(--brown);width:90px;flex-shrink:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.prog-track{flex:1;height:22px;background:var(--border);border-radius:20px;overflow:hidden;position:relative}
+.prog-fill{height:100%;border-radius:20px;background:linear-gradient(90deg,var(--gold),var(--gold-light));transition:width 1s cubic-bezier(.4,0,.2,1)}
+.prog-pct{position:absolute;right:8px;top:50%;transform:translateY(-50%);font-size:.7rem;font-weight:600;color:var(--ink)}
+.prog-date{font-size:.7rem;color:var(--brown);opacity:.55;width:68px;text-align:right;flex-shrink:0}
+
+/* Error */
+.error-msg{background:rgba(196,92,42,.1);border:1px solid rgba(196,92,42,.3);color:var(--rust);padding:12px 16px;border-radius:9px;font-size:.86rem;margin-bottom:20px;display:none}
+
+/* Print */
+@media print {
+  .config-row,.upload-area,.tools-section,.loading,.score-banner,
+  .sr-btns,.fc-nav,.fib-input-row,.chat-input-row,.chat-note,
+  .compare-upload,.progress-section,.no-print{display:none!important}
+  .tab-panel{display:block!important}
+  body{background:white}
+  .result-card,.fc-wrapper,.glossary-item{break-inside:avoid}
+}
+
+/* Animations */
+@keyframes fadeUp{from{opacity:0;transform:translateY(10px)}to{opacity:1;transform:translateY(0)}}
+
+/* Divider */
+.divider{display:flex;align-items:center;gap:14px;margin:28px 0}
+.divider::before,.divider::after{content:'';flex:1;height:1px;background:var(--border)}
+.divider-lbl{font-family:'Playfair Display',serif;font-size:1rem;font-weight:700;white-space:nowrap}
+</style>
+</head>
+<body>
+<div class="container">
+
+<!-- Header -->
+<header>
+  <div class="logo-icon">📖</div>
+  <h1>Study<span>Buddy</span></h1>
+  <p class="tagline">Summarize · Glossary · Flashcards · Fill-in-Blank · Quiz · Study Plan · Ask · Compare</p>
+</header>
+
+<!-- Config -->
+<div class="config-row">
+  <div class="config-field">
+    <label>Anthropic API Key</label>
+    <input type="password" id="apiKey" placeholder="sk-ant-..." autocomplete="off">
+  </div>
+  <div class="config-field">
+    <label>Model</label>
+    <div class="model-pills" id="modelPills"></div>
+  </div>
+</div>
+
+<!-- Error -->
+<div class="error-msg" id="errorMsg"></div>
+
+<!-- Upload -->
+<div class="upload-area" id="uploadArea">
+  <input type="file" id="fileInput" accept=".pptx,.pdf">
+  <span class="upload-icon">🗂️</span>
+  <div class="upload-title">Drop your slides here</div>
+  <div class="upload-sub">PPTX or PDF · click to browse</div>
+  <div class="file-badge" id="fileBadge" style="display:none">
+    <span>📎</span><span id="fileName"></span>
+  </div>
+</div>
+
+<!-- Loading -->
+<div class="loading" id="loading">
+  <div class="spinner"></div>
+  <div class="loading-text" id="loadingText">Processing...</div>
+</div>
+
+<!-- Tool tabs (hidden until file loaded) -->
+<div class="tools-section" id="toolsSection">
+  <div class="tab-bar" id="tabBar">
+    <button class="tab-btn" data-tab="summary">✨ Summary</button>
+    <button class="tab-btn" data-tab="glossary">📚 Glossary</button>
+    <button class="tab-btn" data-tab="flashcards">🃏 Flashcards</button>
+    <button class="tab-btn" data-tab="fillblank">📝 Fill-in-Blank</button>
+    <button class="tab-btn" data-tab="quiz">🎯 Quiz</button>
+    <button class="tab-btn" data-tab="studyplan">📅 Study Plan</button>
+    <button class="tab-btn" data-tab="ask">💬 Ask</button>
+    <button class="tab-btn" data-tab="compare">⚖️ Compare</button>
+  </div>
+
+  <!-- ── SUMMARY ── -->
+  <div class="tab-panel" id="tab-summary">
+    <button class="btn btn-primary btn-full" id="btnSummarize">✨ Generate Summary</button>
+    <div id="summaryCard" style="display:none;margin-top:20px">
+      <div class="result-card">
+        <div class="card-hd">
+          <span class="card-hd-icon">✨</span>
+          <span class="card-hd-title">Summary</span>
+          <div class="card-hd-actions">
+            <button class="btn btn-secondary btn-sm no-print" onclick="window.print()">🖨️ Print</button>
+          </div>
+        </div>
+        <div class="card-body"><div class="prose" id="summaryText"></div></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── GLOSSARY ── -->
+  <div class="tab-panel" id="tab-glossary">
+    <button class="btn btn-primary btn-full" id="btnGlossary">📚 Build Glossary</button>
+    <div id="glossaryCard" style="display:none;margin-top:20px">
+      <div class="result-card">
+        <div class="card-hd">
+          <span class="card-hd-icon">📚</span>
+          <span class="card-hd-title">Key Terms</span>
+          <div class="card-hd-actions">
+            <button class="btn btn-secondary btn-sm no-print" onclick="window.print()">🖨️ Print</button>
+          </div>
+        </div>
+        <div class="card-body">
+          <div class="glossary-list" id="glossaryList"></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── FLASHCARDS ── -->
+  <div class="tab-panel" id="tab-flashcards">
+    <button class="btn btn-primary btn-full" id="btnFlashcards">🃏 Generate Flashcards</button>
+    <div id="flashcardSection" style="display:none;margin-top:20px">
+      <div class="fc-controls">
+        <span class="fc-counter" id="fcCounter">Card 1 of 10</span>
+        <span style="font-size:.78rem;color:var(--brown);opacity:.7">Click card to flip</span>
+      </div>
+      <div class="fc-wrapper" onclick="flipCard()">
+        <div class="fc" id="fc">
+          <div class="fc-face fc-front">
+            <div class="fc-hint">Term</div>
+            <div class="fc-term" id="fcTerm"></div>
+          </div>
+          <div class="fc-face fc-back">
+            <div class="fc-hint">Definition</div>
+            <div class="fc-def" id="fcDef"></div>
+          </div>
+        </div>
+      </div>
+      <div class="fc-nav">
+        <button class="btn btn-secondary btn-sm" id="btnPrev" onclick="prevCard()">← Prev</button>
+        <button class="btn btn-secondary btn-sm" id="btnNext" onclick="nextCard()">Next →</button>
+      </div>
+      <div class="sr-btns" id="srBtns">
+        <button class="sr-btn-know" onclick="markCard('known')">✓ Got it</button>
+        <button class="sr-btn-review" onclick="markCard('review')">↩ Review again</button>
+      </div>
+      <div id="weakIndicator" style="text-align:center;margin-top:10px;font-size:.78rem;color:var(--brown);opacity:.65"></div>
+    </div>
+  </div>
+
+  <!-- ── FILL-IN-BLANK ── -->
+  <div class="tab-panel" id="tab-fillblank">
+    <button class="btn btn-primary btn-full" id="btnFillBlank">📝 Generate Fill-in-Blank</button>
+    <div id="fibSection" style="display:none;margin-top:20px">
+      <div id="fibContainer"></div>
+      <div class="score-banner" id="fibScore">
+        <div class="score-num" id="fibScoreNum"></div>
+        <div class="score-lbl" id="fibScoreLbl"></div>
+        <div class="score-msg" id="fibScoreMsg"></div>
+        <button class="btn btn-secondary no-print" onclick="rerenderFib()" style="margin-top:4px">Try Again</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── QUIZ ── -->
+  <div class="tab-panel" id="tab-quiz">
+    <div class="q-controls">
+      <span style="font-size:.82rem;font-weight:500;color:var(--brown)">Difficulty:</span>
+      <div class="diff-pills">
+        <button class="diff-pill active" data-diff="easy" onclick="setDiff(this,'easy')">Easy</button>
+        <button class="diff-pill" data-diff="medium" onclick="setDiff(this,'medium')">Medium</button>
+        <button class="diff-pill" data-diff="hard" onclick="setDiff(this,'hard')">Hard</button>
+      </div>
+      <button class="btn btn-primary" id="btnQuiz" style="margin-left:auto">🎯 Generate Quiz</button>
+    </div>
+    <div id="quizSection" style="display:none">
+      <div id="questionsContainer"></div>
+      <div class="score-banner" id="scoreBanner">
+        <div class="score-num" id="scoreNumber"></div>
+        <div class="score-lbl" id="scoreLabel"></div>
+        <div class="score-msg" id="scoreMessage"></div>
+        <button class="btn btn-secondary no-print" id="btnRetry" onclick="retryQuiz()" style="margin-top:4px">Try Again</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── STUDY PLAN ── -->
+  <div class="tab-panel" id="tab-studyplan">
+    <div class="sp-date-row">
+      <div class="config-field">
+        <label>Exam Date</label>
+        <input type="date" id="examDate">
+      </div>
+      <button class="btn btn-primary" id="btnStudyPlan">📅 Build Study Plan</button>
+    </div>
+    <div id="studyPlanCard" style="display:none">
+      <div class="result-card">
+        <div class="card-hd">
+          <span class="card-hd-icon">📅</span>
+          <span class="card-hd-title">Your Study Plan</span>
+          <div class="card-hd-actions">
+            <button class="btn btn-secondary btn-sm no-print" onclick="window.print()">🖨️ Print</button>
+          </div>
+        </div>
+        <div class="card-body">
+          <div id="studyPlanContent"></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── ASK ── -->
+  <div class="tab-panel" id="tab-ask">
+    <div class="result-card">
+      <div class="card-hd">
+        <span class="card-hd-icon">💬</span>
+        <span class="card-hd-title">Ask About Your Slides</span>
+      </div>
+      <div class="card-body">
+        <div class="chat-messages" id="chatMessages">
+          <div class="chat-msg assistant">Hi! I've read your slides. Ask me anything about them — definitions, comparisons, "explain this concept", whatever you need.</div>
+        </div>
+        <div class="chat-input-row">
+          <input type="text" id="chatInput" placeholder="Ask a question..." onkeydown="if(event.key==='Enter')sendChat()">
+          <button class="btn btn-primary" id="btnChat" onclick="sendChat()">Ask</button>
+        </div>
+        <div class="chat-note">💡 Slide context is cached — asking multiple questions costs only a tiny bit more</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── COMPARE ── -->
+  <div class="tab-panel" id="tab-compare">
+    <p style="font-size:.88rem;color:var(--brown);margin-bottom:16px">Upload a second deck to compare topics, overlaps, and how the material connects.</p>
+    <div class="compare-upload" id="compareUpload">
+      <input type="file" id="fileInput2" accept=".pptx,.pdf">
+      <span style="font-size:1.8rem;display:block;margin-bottom:8px">📂</span>
+      <div style="font-weight:600;font-size:.9rem;margin-bottom:4px">Upload Second Deck</div>
+      <div class="file-badge" id="fileBadge2" style="display:none;position:relative;z-index:1;pointer-events:none">
+        <span>📎</span><span id="fileName2"></span>
+      </div>
+    </div>
+    <button class="btn btn-primary btn-full" id="btnCompare" disabled>⚖️ Compare Decks</button>
+    <div id="compareResult" style="display:none;margin-top:20px"></div>
+  </div>
+</div><!-- /tools-section -->
+
+<!-- Progress Dashboard -->
+<div class="progress-section" id="progressSection" style="display:none">
+  <div class="progress-hd" onclick="toggleProgress()">
+    <span class="progress-hd-title">📊 Quiz History</span>
+    <span id="progressArrow" style="font-size:.75rem;opacity:.5">▼</span>
+  </div>
+  <div class="progress-body" id="progressBody" style="display:none"></div>
+</div>
+
+</div><!-- /container -->
+
+<script>
+// ── Model Selector ────────────────────────────────────────────
+const MODELS = __MODELS_JSON__;
+let selectedModel = MODELS.find(m => m.default)?.id || MODELS[0].id;
+
+(function initModels() {
+  const c = document.getElementById('modelPills');
+  MODELS.forEach(m => {
+    const el = document.createElement('button');
+    el.className = 'm-pill' + (m.id === selectedModel ? ' active' : '');
+    el.dataset.id = m.id;
+    el.innerHTML = `${m.label}<small>${m.badge}</small>`;
+    el.onclick = () => {
+      selectedModel = m.id;
+      c.querySelectorAll('.m-pill').forEach(p => p.classList.toggle('active', p.dataset.id === m.id));
+    };
+    c.appendChild(el);
+  });
+})();
+
+// ── State ─────────────────────────────────────────────────────
+let slideText = '', deck2Text = '', deckName = '';
+let questions = [], fibQuestions = [], flashcards = [], fibAnswers = {};
+let answers = {}, totalQ = 0, currentCard = 0, cardFlipped = false;
+let chatHistory = [], weakCards = new Set();
+let quizDifficulty = 'easy';
+
+const $ = id => document.getElementById(id);
+
+// ── Tabs ──────────────────────────────────────────────────────
+function switchTab(tabId) {
+  document.querySelectorAll('.tab-panel').forEach(p => p.classList.remove('active'));
+  document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+  const panel = $('tab-' + tabId);
+  const btn = document.querySelector(`[data-tab="${tabId}"]`);
+  if (panel) panel.classList.add('active');
+  if (btn) btn.classList.add('active');
+  hideError();
+}
+
+document.querySelectorAll('.tab-btn').forEach(b => b.addEventListener('click', () => switchTab(b.dataset.tab)));
+
+// ── File Upload ───────────────────────────────────────────────
+$('fileInput').addEventListener('change', e => { const f = e.target.files[0]; if (f) handleUpload(f, false); });
+const ua = $('uploadArea');
+ua.addEventListener('dragover', e => { e.preventDefault(); ua.classList.add('dragover'); });
+ua.addEventListener('dragleave', () => ua.classList.remove('dragover'));
+ua.addEventListener('drop', e => {
+  e.preventDefault(); ua.classList.remove('dragover');
+  const f = e.dataTransfer.files[0];
+  if (f) handleUpload(f, false);
+});
+
+$('fileInput2').addEventListener('change', e => { const f = e.target.files[0]; if (f) handleUpload(f, true); });
+
+async function handleUpload(file, isSecond) {
+  showLoading(isSecond ? 'Reading second deck...' : 'Extracting slide text...');
+  const fd = new FormData(); fd.append('file', file);
+  try {
+    const res = await fetch('/upload', { method: 'POST', body: fd });
+    const data = await res.json();
+    if (data.error) throw new Error(data.error);
+    if (isSecond) {
+      deck2Text = data.text;
+      $('fileName2').textContent = file.name;
+      $('fileBadge2').style.display = 'inline-flex';
+      $('btnCompare').disabled = false;
+    } else {
+      slideText = data.text;
+      deckName = file.name.replace(/\.[^.]+$/, '');
+      $('fileName').textContent = file.name;
+      $('fileBadge').style.display = 'inline-flex';
+      $('toolsSection').style.display = 'block';
+      switchTab('summary');
+      loadWeakCards();
+      loadProgress();
+    }
+    hideLoading();
+  } catch (err) {
+    hideLoading();
+    showError('Upload failed: ' + err.message);
+  }
+}
+
+// ── AI Helper ─────────────────────────────────────────────────
+async function callAI(prompt, opts = {}) {
+  const apiKey = $('apiKey').value.trim();
+  if (!apiKey) throw new Error('Please enter your Anthropic API key.');
+  const body = { api_key: apiKey, model: selectedModel, prompt };
+  if (opts.useCache && opts.slideText) {
+    body.slide_text = opts.slideText;
+    body.use_cache = true;
+  }
+  const res = await fetch('/ai', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body)
+  });
+  const data = await res.json();
+  if (data.error) throw new Error(data.error);
+  return data.text;
+}
+
+async function run(label, fn) {
+  hideError();
+  showLoading(label);
+  try { await fn(); } catch (e) { showError(e.message); }
+  hideLoading();
+}
+
+// ── Summary ───────────────────────────────────────────────────
+$('btnSummarize').addEventListener('click', () => run('Generating summary...', async () => {
+  const text = await callAI(
+    `You are a study assistant. Summarize the following slide content into clear, well-organized bullet points grouped by topic. Be concise but comprehensive. Use plain text only — no markdown headers or asterisks.\n\nSlide content:\n${slideText}`
+  );
+  $('summaryText').textContent = text;
+  $('summaryCard').style.display = 'block';
+}));
+
+// ── Glossary ──────────────────────────────────────────────────
+$('btnGlossary').addEventListener('click', () => run('Building glossary...', async () => {
+  const raw = await callAI(
+    `You are a study assistant. Extract the 15 most important terms or concepts from these slides and create a glossary. Return ONLY valid JSON — no markdown, no explanation.\n\nFormat:\n[\n  { "term": "...", "definition": "Concise 1-2 sentence definition." }\n]\n\nSlide content:\n${slideText}`
+  );
+  const terms = parseJSON(raw);
+  const list = $('glossaryList');
+  list.innerHTML = '';
+  terms.forEach(t => {
+    const item = document.createElement('div');
+    item.className = 'glossary-item';
+    item.innerHTML = `<div class="glossary-term" onclick="this.parentElement.classList.toggle('open')">${t.term}<span class="g-arrow">▾</span></div><div class="glossary-def">${t.definition}</div>`;
+    list.appendChild(item);
+  });
+  $('glossaryCard').style.display = 'block';
+}));
+
+// ── Flashcards ────────────────────────────────────────────────
+$('btnFlashcards').addEventListener('click', () => run('Generating flashcards...', async () => {
+  const raw = await callAI(
+    `You are a study assistant. Extract the 12 most important terms or concepts from these slides and create flashcards. Return ONLY valid JSON — no markdown, no explanation.\n\nFormat:\n[\n  { "term": "...", "definition": "Concise 1-2 sentence definition." }\n]\n\nSlide content:\n${slideText}`
+  );
+  flashcards = parseJSON(raw);
+  currentCard = 0; cardFlipped = false;
+  applySpacedOrder();
+  renderCard();
+  $('flashcardSection').style.display = 'block';
+}));
+
+function renderCard() {
+  const fc = flashcards[currentCard];
+  $('fcTerm').textContent = fc.term;
+  $('fcDef').textContent = fc.definition;
+  $('fcCounter').textContent = `Card ${currentCard + 1} of ${flashcards.length}`;
+  $('fc').classList.remove('flipped'); cardFlipped = false;
+  $('srBtns').style.display = 'none';
+  $('btnPrev').disabled = currentCard === 0;
+  $('btnNext').disabled = currentCard === flashcards.length - 1;
+  const wc = [...weakCards].filter(i => i < flashcards.length).length;
+  $('weakIndicator').textContent = wc > 0 ? `${wc} card${wc > 1 ? 's' : ''} marked for review` : '';
+}
+
+function flipCard() {
+  cardFlipped = !cardFlipped;
+  $('fc').classList.toggle('flipped', cardFlipped);
+  if (cardFlipped) $('srBtns').style.display = 'flex';
+}
+
+function prevCard() { if (currentCard > 0) { currentCard--; renderCard(); } }
+function nextCard() { if (currentCard < flashcards.length - 1) { currentCard++; renderCard(); } }
+
+function markCard(status) {
+  if (status === 'review') weakCards.add(currentCard);
+  else weakCards.delete(currentCard);
+  saveWeakCards();
+  updateWeakIndicator();
+  if (currentCard < flashcards.length - 1) nextCard();
+  else renderCard();
+}
+
+function applySpacedOrder() {
+  // Move weak cards to the end so they come up again
+  const normal = flashcards.filter((_, i) => !weakCards.has(i));
+  const weak = flashcards.filter((_, i) => weakCards.has(i));
+  flashcards = [...normal, ...weak, ...weak]; // weak cards appear twice
+}
+
+function updateWeakIndicator() {
+  const wc = weakCards.size;
+  $('weakIndicator').textContent = wc > 0 ? `${wc} card${wc > 1 ? 's' : ''} marked for review` : '';
+}
+
+// ── Fill-in-Blank ─────────────────────────────────────────────
+$('btnFillBlank').addEventListener('click', () => run('Generating fill-in-blank...', async () => {
+  const raw = await callAI(
+    `You are a study assistant. Create 10 fill-in-the-blank exercises from these slides. Use ___ for the blank. Return ONLY valid JSON — no markdown, no explanation.\n\nFormat:\n[\n  {\n    "sentence": "The ___ is responsible for X.",\n    "answer": "correct word",\n    "hint": "Optional short hint"\n  }\n]\n\nSlide content:\n${slideText}`
+  );
+  fibQuestions = parseJSON(raw);
+  fibAnswers = {};
+  rerenderFib();
+  $('fibSection').style.display = 'block';
+}));
+
+function rerenderFib() {
+  fibAnswers = {};
+  $('fibScore').style.display = 'none';
+  const c = $('fibContainer'); c.innerHTML = '';
+  fibQuestions.forEach((q, i) => {
+    const div = document.createElement('div');
+    div.className = 'fib-block'; div.id = 'fib' + i;
+    div.innerHTML = `
+      <div class="fib-num">Question ${i+1} of ${fibQuestions.length}</div>
+      <div class="fib-sentence">${q.sentence.replace('___', '<strong style="color:var(--gold)">[blank]</strong>')}</div>
+      <div class="fib-input-row">
+        <input class="fib-input" id="fibIn${i}" placeholder="Type your answer..." onkeydown="if(event.key==='Enter')checkFib(${i})">
+        <button class="btn btn-secondary btn-sm" onclick="checkFib(${i})">Check</button>
+      </div>
+      ${q.hint ? `<div class="fib-hint">Hint: ${q.hint}</div>` : ''}
+      <div class="fib-feedback" id="fibFb${i}"></div>`;
+    c.appendChild(div);
+  });
+}
+
+function checkFib(i) {
+  if (fibAnswers[i] !== undefined) return;
+  const val = ($('fibIn' + i).value || '').trim().toLowerCase();
+  const correct = fibQuestions[i].answer.trim().toLowerCase();
+  const isOk = val === correct || correct.includes(val) && val.length > 2;
+  fibAnswers[i] = isOk;
+  $('fibIn' + i).disabled = true;
+  const fb = $('fibFb' + i);
+  fb.className = 'fib-feedback ' + (isOk ? 'correct' : 'wrong');
+  fb.textContent = isOk ? `✓ Correct!` : `✗ Answer: ${fibQuestions[i].answer}`;
+  fb.style.display = 'block';
+  $('fib' + i).classList.add(isOk ? 'correct' : 'wrong');
+  if (Object.keys(fibAnswers).length === fibQuestions.length) {
+    const score = Object.values(fibAnswers).filter(Boolean).length;
+    const pct = Math.round(score / fibQuestions.length * 100);
+    $('fibScoreNum').textContent = pct + '%';
+    $('fibScoreLbl').textContent = `${score} of ${fibQuestions.length} correct`;
+    $('fibScoreMsg').textContent = pct >= 80 ? 'Excellent! 🎉' : pct >= 60 ? 'Nice effort!' : 'Keep at it! 💪';
+    $('fibScore').style.display = 'block';
+    $('fibScore').scrollIntoView({ behavior: 'smooth', block: 'center' });
+  }
+}
+
+// ── Quiz ──────────────────────────────────────────────────────
+function setDiff(el, d) {
+  quizDifficulty = d;
+  document.querySelectorAll('.diff-pill').forEach(p => p.classList.remove('active'));
+  el.classList.add('active');
+}
+
+const diffPrompts = {
+  easy: 'Generate straightforward questions testing basic recall and understanding.',
+  medium: 'Generate questions requiring application and analysis of concepts.',
+  hard: 'Generate challenging questions with trick options, requiring deep understanding and critical thinking.'
+};
+
+$('btnQuiz').addEventListener('click', () => run('Generating quiz...', async () => {
+  const raw = await callAI(
+    `You are a study assistant. ${diffPrompts[quizDifficulty]} Based on the following slide content, generate 8 multiple choice questions. Return ONLY valid JSON — no markdown, no explanation.\n\nFormat:\n[\n  {\n    "question": "...",\n    "options": ["A. ...", "B. ...", "C. ...", "D. ..."],\n    "answer": "A",\n    "explanation": "Brief explanation."\n  }\n]\n\nSlide content:\n${slideText}`
+  );
+  questions = parseJSON(raw); totalQ = questions.length; answers = {};
+  $('quizSection').style.display = 'block';
+  renderQuiz();
+}));
+
+function renderQuiz() {
+  const c = $('questionsContainer'); c.innerHTML = ''; $('scoreBanner').style.display = 'none';
+  questions.forEach((q, qi) => {
+    const letters = ['A','B','C','D'];
+    const div = document.createElement('div');
+    div.className = 'question-block'; div.id = 'q' + qi;
+    div.innerHTML = `
+      <div class="q-num">Question ${qi+1} of ${totalQ}</div>
+      <div class="q-text">${q.question}</div>
+      <div class="options" id="opts${qi}">
+        ${q.options.map((o, oi) => `
+          <div class="option" onclick="selectOpt(this,${qi},'${letters[oi]}')">
+            <div class="opt-letter">${letters[oi]}</div>
+            <span>${o.replace(/^[A-D]\.\s*/,'')}</span>
+          </div>`).join('')}
+      </div>
+      <div class="q-feedback" id="qfb${qi}"></div>`;
+    c.appendChild(div);
+  });
+}
+
+function selectOpt(el, qi, letter) {
+  if (answers[qi] !== undefined) return;
+  answers[qi] = letter;
+  document.querySelectorAll(`#opts${qi} .option`).forEach(o => {
+    o.classList.add('disabled'); o.style.cursor = 'default';
+    if (o.querySelector('.opt-letter').textContent === questions[qi].answer) o.classList.add('correct-ans');
+    else if (o.querySelector('.opt-letter').textContent === letter && letter !== questions[qi].answer) o.classList.add('wrong-ans');
+  });
+  const ok = letter === questions[qi].answer;
+  $('q'+qi).classList.add(ok ? 'correct' : 'incorrect');
+  const fb = $('qfb'+qi);
+  fb.className = 'q-feedback ' + (ok ? 'correct' : 'incorrect');
+  fb.textContent = (ok ? '✓ Correct! ' : '✗ Not quite. ') + questions[qi].explanation;
+  fb.style.display = 'block';
+  if (Object.keys(answers).length === totalQ) finishQuiz();
+}
+
+function finishQuiz() {
+  const correct = Object.entries(answers).filter(([qi,l]) => l === questions[qi].answer).length;
+  const pct = Math.round(correct / totalQ * 100);
+  $('scoreNumber').textContent = pct + '%';
+  $('scoreLabel').textContent = `${correct} of ${totalQ} correct`;
+  $('scoreMessage').textContent = pct >= 80 ? 'Excellent work! 🎉' : pct >= 60 ? 'Good effort — review the missed ones!' : "Keep studying — you've got this! 💪";
+  $('scoreBanner').style.display = 'block';
+  $('scoreBanner').scrollIntoView({ behavior: 'smooth', block: 'center' });
+  saveProgress(deckName, pct, correct, totalQ);
+}
+
+function retryQuiz() { answers = {}; renderQuiz(); }
+
+// ── Study Plan ────────────────────────────────────────────────
+$('btnStudyPlan').addEventListener('click', () => {
+  const examDate = $('examDate').value;
+  if (!examDate) { showError('Please pick an exam date first.'); return; }
+  run('Building your study plan...', async () => {
+    const raw = await callAI(
+      `You are a study assistant. The student has an exam on ${examDate}. Today is ${new Date().toISOString().slice(0,10)}. Based on these slides, create a day-by-day study plan. Return ONLY valid JSON — no markdown, no explanation.\n\nFormat:\n{\n  "total_hours": 8,\n  "days": [\n    {\n      "label": "Mon May 19",\n      "tasks": ["Review Chapter 1 — focus on X (1h)", "Flashcards for Y (30min)"]\n    }\n  ]\n}\n\nSlide content:\n${slideText}`
+    );
+    const plan = JSON.parse(raw.slice(raw.indexOf('{'), raw.lastIndexOf('}')+1));
+    const c = $('studyPlanContent');
+    c.innerHTML = `<p style="font-size:.88rem;color:var(--brown);margin-bottom:20px">Estimated study time: <strong>${plan.total_hours} hours</strong></p><div class="sp-timeline">`;
+    plan.days.forEach(day => {
+      c.innerHTML += `<div class="sp-day"><div class="sp-day-label">${day.label}</div>${day.tasks.map(t => `<div class="sp-task">📌 ${t}</div>`).join('')}</div>`;
+    });
+    c.innerHTML += '</div>';
+    $('studyPlanCard').style.display = 'block';
+  });
+});
+
+// ── Ask the Slides (Chat) ─────────────────────────────────────
+async function sendChat() {
+  const input = $('chatInput');
+  const q = input.value.trim();
+  if (!q || !slideText) return;
+  const apiKey = $('apiKey').value.trim();
+  if (!apiKey) { showError('Please enter your Anthropic API key.'); return; }
+  input.value = '';
+  addChatMsg(q, 'user');
+  chatHistory.push({ role: 'user', content: q });
+  const thinking = addChatMsg('Thinking...', 'assistant thinking');
+  $('btnChat').disabled = true;
+  try {
+    const res = await fetch('/chat', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ api_key: apiKey, model: selectedModel, slide_text: slideText, history: chatHistory })
+    });
+    const data = await res.json();
+    if (data.error) throw new Error(data.error);
+    thinking.remove();
+    addChatMsg(data.text, 'assistant');
+    chatHistory.push({ role: 'assistant', content: data.text });
+  } catch (e) {
+    thinking.remove();
+    showError(e.message);
+  }
+  $('btnChat').disabled = false;
+}
+
+function addChatMsg(text, role) {
+  const msgs = $('chatMessages');
+  const div = document.createElement('div');
+  div.className = 'chat-msg ' + role;
+  div.textContent = text;
+  msgs.appendChild(div);
+  msgs.scrollTop = msgs.scrollHeight;
+  return div;
+}
+
+// ── Compare Decks ─────────────────────────────────────────────
+$('btnCompare').addEventListener('click', () => {
+  if (!slideText || !deck2Text) return;
+  run('Comparing decks...', async () => {
+    const raw = await callAI(
+      `You are a study assistant. Compare these two sets of study material. Return ONLY valid JSON — no markdown, no explanation.\n\nFormat:\n{\n  "deck1_unique": ["concept1"],\n  "deck2_unique": ["concept2"],\n  "shared_concepts": ["shared1"],\n  "relationships": ["Deck 1 introduces X which Deck 2 expands as Y"],\n  "study_tips": ["Study Deck 1 first for foundations"]\n}\n\nDECK 1:\n${slideText}\n\nDECK 2:\n${deck2Text}`
+    );
+    const cmp = JSON.parse(raw.slice(raw.indexOf('{'), raw.lastIndexOf('}')+1));
+    const r = $('compareResult');
+    r.innerHTML = `
+      <div class="compare-grid">
+        <div class="compare-col">
+          <div class="compare-col-title">Deck 1 Only</div>
+          ${cmp.deck1_unique.map(c => `<span class="compare-tag">${c}</span>`).join('')}
+        </div>
+        <div class="compare-col">
+          <div class="compare-col-title">Deck 2 Only</div>
+          ${cmp.deck2_unique.map(c => `<span class="compare-tag">${c}</span>`).join('')}
+        </div>
+      </div>
+      <div class="compare-col" style="margin-bottom:16px">
+        <div class="compare-col-title">Shared Concepts</div>
+        ${cmp.shared_concepts.map(c => `<span class="compare-tag shared">${c}</span>`).join('')}
+      </div>
+      <div class="divider"><span class="divider-lbl">How They Connect</span></div>
+      ${cmp.relationships.map(r => `<div class="compare-relationship">🔗 ${r}</div>`).join('')}
+      <div class="divider"><span class="divider-lbl">Study Tips</span></div>
+      ${cmp.study_tips.map(t => `<div class="compare-relationship">💡 ${t}</div>`).join('')}`;
+    r.style.display = 'block';
+  });
+});
+
+// ── Progress Tracking ─────────────────────────────────────────
+function saveProgress(deck, pct, correct, total) {
+  const history = JSON.parse(localStorage.getItem('sb_progress') || '[]');
+  history.push({ date: new Date().toLocaleDateString('en-US',{month:'short',day:'numeric'}), deck, pct, correct, total });
+  if (history.length > 20) history.shift();
+  localStorage.setItem('sb_progress', JSON.stringify(history));
+  loadProgress();
+}
+
+function loadProgress() {
+  const history = JSON.parse(localStorage.getItem('sb_progress') || '[]');
+  const section = $('progressSection');
+  if (history.length === 0) { section.style.display = 'none'; return; }
+  section.style.display = 'block';
+  const body = $('progressBody');
+  body.innerHTML = `<div class="progress-bars">${
+    history.slice(-10).reverse().map(h => `
+      <div class="prog-row">
+        <span class="prog-label" title="${h.deck}">${h.deck}</span>
+        <div class="prog-track">
+          <div class="prog-fill" style="width:${h.pct}%"></div>
+          <span class="prog-pct">${h.pct}%</span>
+        </div>
+        <span class="prog-date">${h.date}</span>
+      </div>`).join('')
+  }</div>`;
+}
+
+function toggleProgress() {
+  const body = $('progressBody');
+  const arr = $('progressArrow');
+  const open = body.style.display === 'block';
+  body.style.display = open ? 'none' : 'block';
+  arr.textContent = open ? '▼' : '▲';
+}
+
+// ── Spaced Rep ─────────────────────────────────────────────────
+function saveWeakCards() {
+  const store = JSON.parse(localStorage.getItem('sb_weak') || '{}');
+  store[deckName] = [...weakCards];
+  localStorage.setItem('sb_weak', JSON.stringify(store));
+}
+
+function loadWeakCards() {
+  const store = JSON.parse(localStorage.getItem('sb_weak') || '{}');
+  weakCards = new Set(store[deckName] || []);
+}
+
+// ── Utilities ─────────────────────────────────────────────────
+function parseJSON(raw) {
+  const s = raw.indexOf('['), e = raw.lastIndexOf(']');
+  if (s === -1 || e === -1) throw new Error('Could not parse response format.');
+  return JSON.parse(raw.slice(s, e + 1));
+}
+
+function showLoading(msg) { $('loadingText').textContent = msg; $('loading').style.display = 'block'; }
+function hideLoading() { $('loading').style.display = 'none'; }
+function showError(msg) { $('errorMsg').textContent = msg; $('errorMsg').style.display = 'block'; }
+function hideError() { $('errorMsg').style.display = 'none'; }
+</script>
+</body>
+</html>"""
+
+
+def build_html():
+    return HTML.replace("__MODELS_JSON__", json.dumps(MODELS))
+
+
+def extract_text_pptx(data: bytes) -> str:
+    from pptx import Presentation
+    prs = Presentation(BytesIO(data))
+    slides = []
+    for i, slide in enumerate(prs.slides, 1):
+        parts = [s.text.strip() for s in slide.shapes if hasattr(s, "text") and s.text.strip()]
+        if parts:
+            slides.append(f"[Slide {i}]\n" + "\n".join(parts))
+    return "\n\n".join(slides)
+
+
+def extract_text_pdf(data: bytes) -> str:
+    try:
+        from pypdf import PdfReader
+    except ImportError:
+        raise ValueError("Missing library. Run: pip install pypdf")
+    reader = PdfReader(BytesIO(data))
+    pages = []
+    for i, page in enumerate(reader.pages, 1):
+        text = page.extract_text() or ""
+        if text.strip():
+            pages.append(f"[Page {i}]\n{text.strip()}")
+    return "\n\n".join(pages)
+
+
+def anthropic_request(payload: dict, api_key: str, extra_headers: dict = None):
+    body = json.dumps(payload).encode()
+    headers = {
+        "Content-Type": "application/json",
+        "x-api-key": api_key,
+        "anthropic-version": "2023-06-01",
+    }
+    if extra_headers:
+        headers.update(extra_headers)
+    req = urllib.request.Request(
+        "https://api.anthropic.com/v1/messages",
+        data=body, headers=headers
+    )
+    with urllib.request.urlopen(req) as resp:
+        return json.loads(resp.read())
+
+
+VALID_MODELS = {m["id"] for m in MODELS}
+
+
+class Handler(http.server.BaseHTTPRequestHandler):
+    def log_message(self, format, *args):
+        pass
+
+    def do_GET(self):
+        self.send_response(200)
+        self.send_header("Content-type", "text/html")
+        self.end_headers()
+        self.wfile.write(build_html().encode())
+
+    def do_POST(self):
+        if self.path == "/upload":
+            self.handle_upload()
+        elif self.path == "/ai":
+            self.handle_ai()
+        elif self.path == "/chat":
+            self.handle_chat()
+
+    def handle_upload(self):
+        try:
+            content_type = self.headers.get("Content-Type", "")
+            content_length = int(self.headers.get("Content-Length", 0))
+            raw_body = self.rfile.read(content_length)
+
+            file_data = self._parse_multipart(raw_body, content_type)
+            if file_data is None:
+                raise ValueError("No file field found in upload")
+
+            # Detect by magic bytes: PDF starts with %PDF, else treat as PPTX (zip)
+            if file_data[:4] == b"%PDF":
+                text = extract_text_pdf(file_data)
+            else:
+                try:
+                    text = extract_text_pptx(file_data)
+                except ImportError:
+                    self._json({"error": "Missing library. Run: pip install python-pptx"})
+                    return
+
+            if not text.strip():
+                raise ValueError("No readable text found in file")
+            self._json({"text": text})
+        except Exception as e:
+            self._json({"error": str(e)})
+
+    @staticmethod
+    def _parse_multipart(body: bytes, content_type: str):
+        """
+        Pure-stdlib multipart parser — no cgi module required.
+        Works on Python 3.11, 3.12, 3.13+.
+        Returns the raw bytes of the first field named 'file', or None.
+        """
+        import re
+        m = re.search(r'boundary=([^\s;]+)', content_type)
+        if not m:
+            raise ValueError("No boundary found in Content-Type header")
+
+        boundary = m.group(1).strip('"').encode()
+        delimiter = b"--" + boundary
+
+        # Split on boundary lines
+        parts = body.split(delimiter)
+        for part in parts:
+            # Skip preamble and epilogue
+            if part in (b"", b"--", b"--\r\n", b"\r\n"):
+                continue
+            if part.startswith(b"--"):
+                continue
+
+            # Strip leading CRLF
+            if part.startswith(b"\r\n"):
+                part = part[2:]
+
+            # Split headers from body at the first blank line
+            if b"\r\n\r\n" not in part:
+                continue
+            headers_raw, file_body = part.split(b"\r\n\r\n", 1)
+
+            # Strip trailing CRLF added by the boundary delimiter
+            if file_body.endswith(b"\r\n"):
+                file_body = file_body[:-2]
+
+            headers_str = headers_raw.decode("utf-8", errors="replace")
+            # Look for Content-Disposition containing name="file"
+            if re.search(r'name=["\']file["\']', headers_str, re.IGNORECASE):
+                return file_body
+
+        return None
+
+    def handle_ai(self):
+        try:
+            body = self._read_json()
+            api_key = body.get("api_key", "")
+            prompt = body.get("prompt", "")
+            model = body.get("model", "claude-haiku-4-5-20251001")
+            use_cache = body.get("use_cache", False)
+            slide_text = body.get("slide_text", "")
+
+            if not api_key:
+                self._json({"error": "No API key provided"}); return
+            if model not in VALID_MODELS:
+                model = "claude-haiku-4-5-20251001"
+
+            if use_cache and slide_text:
+                # Use prompt caching: slide_text as cached block, question as ephemeral
+                payload = {
+                    "model": model,
+                    "max_tokens": 2048,
+                    "messages": [{
+                        "role": "user",
+                        "content": [
+                            {"type": "text", "text": slide_text,
+                             "cache_control": {"type": "ephemeral"}},
+                            {"type": "text", "text": prompt}
+                        ]
+                    }]
+                }
+                extra = {"anthropic-beta": "prompt-caching-2024-07-31"}
+            else:
+                payload = {
+                    "model": model, "max_tokens": 2048,
+                    "messages": [{"role": "user", "content": prompt}]
+                }
+                extra = None
+
+            data = anthropic_request(payload, api_key, extra)
+            self._json({"text": data["content"][0]["text"]})
+
+        except urllib.error.HTTPError as e:
+            err = e.read().decode()
+            try: msg = json.loads(err).get("error", {}).get("message", err)
+            except: msg = err
+            self._json({"error": msg})
+        except Exception as e:
+            self._json({"error": str(e)})
+
+    def handle_chat(self):
+        """Chat endpoint with prompt caching on slide_text."""
+        try:
+            body = self._read_json()
+            api_key = body.get("api_key", "")
+            model = body.get("model", "claude-haiku-4-5-20251001")
+            slide_text = body.get("slide_text", "")
+            history = body.get("history", [])  # [{role, content}]
+
+            if not api_key:
+                self._json({"error": "No API key provided"}); return
+            if model not in VALID_MODELS:
+                model = "claude-haiku-4-5-20251001"
+
+            system_content = [
+                {
+                    "type": "text",
+                    "text": f"You are a helpful study assistant. Answer questions based ONLY on the following slide content. Be concise and clear.\n\n{slide_text}",
+                    "cache_control": {"type": "ephemeral"}
+                }
+            ]
+
+            messages = [{"role": m["role"], "content": m["content"]} for m in history]
+
+            payload = {
+                "model": model,
+                "max_tokens": 1024,
+                "system": system_content,
+                "messages": messages,
+            }
+
+            data = anthropic_request(payload, api_key,
+                                     {"anthropic-beta": "prompt-caching-2024-07-31"})
+            self._json({"text": data["content"][0]["text"]})
+
+        except urllib.error.HTTPError as e:
+            err = e.read().decode()
+            try: msg = json.loads(err).get("error", {}).get("message", err)
+            except: msg = err
+            self._json({"error": msg})
+        except Exception as e:
+            self._json({"error": str(e)})
+
+    def _read_json(self):
+        length = int(self.headers.get("Content-Length", 0))
+        return json.loads(self.rfile.read(length))
+
+    def _json(self, data):
+        body = json.dumps(data).encode()
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", len(body))
+        self.end_headers()
+        self.wfile.write(body)
+
+
+if __name__ == "__main__":
+    print(f"\n  StudyBuddy — Full Suite")
+    print(f"  Open: http://localhost:{PORT}")
+    print(f"  Install: pip install python-pptx pypdf")
+    print(f"  Default model: Haiku 4.5 (cheapest)")
+    print(f"  Press Ctrl+C to stop\n")
+    with socketserver.TCPServer(("", PORT), Handler) as httpd:
+        httpd.serve_forever()
