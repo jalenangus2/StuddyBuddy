@@ -251,7 +251,27 @@ input:focus{border-color:var(--gold)}
   </div>
 </div>
 
+<div class="divider"><span class="divider-lbl">📚 Your Library</span></div>
+<div style="display:flex; justify-content:flex-end; margin-bottom:16px;">
+  <button class="btn btn-secondary btn-sm" onclick="loadMasterGlossary()">🧠 View Master Glossary</button>
+</div>
 <div id="libraryContainer" class="library-container"></div>
+
+<div id="masterGlossarySection" style="display:none; margin-bottom: 40px;">
+  <div class="result-card">
+    <div class="card-hd">
+      <span class="card-hd-icon">🧠</span>
+      <span class="card-hd-title">Master Glossary (All Decks)</span>
+      <div class="card-hd-actions">
+        <button class="btn btn-secondary btn-sm" onclick="closeMasterGlossary()">Close</button>
+        <button class="btn btn-secondary btn-sm no-print" onclick="window.print()">🖨️ Print</button>
+      </div>
+    </div>
+    <div class="card-body">
+      <div class="glossary-list" id="masterGlossaryList"></div>
+    </div>
+  </div>
+</div>
 
 <div class="loading" id="loading">
   <div class="spinner"></div>
@@ -434,6 +454,45 @@ input:focus{border-color:var(--gold)}
 </div>
 
 </div><script>
+
+// ── Master Glossary ───────────────────────────────────────────
+async function loadMasterGlossary() {
+  showLoading('Compiling Master Glossary from all decks...');
+  try {
+    const res = await fetch('/api/master_glossary');
+    const data = await res.json();
+    
+    if (data.error) throw new Error(data.error);
+    if (!data.terms || data.terms.length === 0) {
+      throw new Error("No glossary terms found in your library yet. Generate some first!");
+    }
+
+    const list = $('masterGlossaryList');
+    list.innerHTML = `<p style="font-size:0.85rem; color:var(--brown); margin-bottom:16px;">Showing ${data.terms.length} unique terms compiled from all your uploads, sorted alphabetically.</p>`;
+    
+    data.terms.forEach(t => {
+      const item = document.createElement('div');
+      item.className = 'glossary-item';
+      item.innerHTML = `<div class="glossary-term" onclick="this.parentElement.classList.toggle('open')">${t.term}<span class="g-arrow">▾</span></div><div class="glossary-def">${t.definition}</div>`;
+      list.appendChild(item);
+    });
+
+    $('uploadArea').style.display = 'none';
+    $('toolsSection').style.display = 'none';
+    $('masterGlossarySection').style.display = 'block';
+    hideError();
+
+  } catch (e) {
+    showError(e.message);
+  }
+  hideLoading();
+}
+
+function closeMasterGlossary() {
+  $('masterGlossarySection').style.display = 'none';
+  $('uploadArea').style.display = 'block';
+  if (slideText) $('toolsSection').style.display = 'block';
+}
 // ── Model Selector ────────────────────────────────────────────
 const MODELS = [
   {"id": "claude-haiku-4-5-20251001", "label": "Haiku 4.5",  "badge": "Fastest · ~$0.00001/session", "default": true},

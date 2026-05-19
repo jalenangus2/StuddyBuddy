@@ -74,6 +74,44 @@ async def get_library():
     except Exception as e:
         return JSONResponse(status_code=500, content={"error": str(e)})
 
+@app.get("/api/master_glossary")
+async def get_master_glossary():
+    if not supabase: return {"error": "Database not connected"}
+    try:
+        # Fetch every row that has a generated glossary
+        res = supabase.table("study_materials").select("glossary").not_.is_("glossary", "null").execute()
+        
+        all_terms = []
+        for row in res.data:
+            if row.get("glossary"):
+                try:
+                    # Some responses might have markdown formatting around the JSON
+                    raw = row["glossary"]
+                    s = raw.find('[')
+                    e = raw.rfind(']')
+                    if s != -1 and e != -1:
+                        terms = json.loads(raw[s:e+1])
+                        all_terms.extend(terms)
+                except Exception:
+                    pass
+        
+        # Remove duplicates (ignoring capitalization)
+        seen = set()
+        unique_terms = []
+        for t in all_terms:
+            term_name = t.get("term", "").strip()
+            term_lower = term_name.lower()
+            if term_lower and term_lower not in seen:
+                seen.add(term_lower)
+                unique_terms.append(t)
+                
+        # Sort alphabetically
+        unique_terms.sort(key=lambda x: x["term"].lower())
+        
+        return {"terms": unique_terms}
+    except Exception as e:
+        return JSONResponse(status_code=500, content={"error": str(e)})
+    
 # --- NEW: Load Specific Deck ---
 @app.get("/api/load/{file_hash}")
 async def load_deck(file_hash: str):
