@@ -62,36 +62,62 @@ def anthropic_request(payload: dict, extra_headers: dict = None):
     with urllib.request.urlopen(req) as resp:
         return json.loads(resp.read())
 
-# NEW ENDPOINT: For handling client-extracted text (bypasses Vercel 4.5MB limit)
+# --- NEW: Get Library ---
+@app.get("/api/library")
+async def get_library():
+    if not supabase: return {"decks": []}
+    try:
+        # Fetch just the hash and filename for the menu
+        res = supabase.table("study_materials").select("file_hash, filename").execute()
+        return {"decks": res.data}
+    except Exception as e:
+        return JSONResponse(status_code=500, content={"error": str(e)})
+
+# --- NEW: Load Specific Deck ---
+@app.get("/api/load/{file_hash}")
+async def load_deck(file_hash: str):
+    if not supabase: return {"error": "Database not connected"}
+    try:
+        res = supabase.table("study_materials").select("*").eq("file_hash", file_hash).execute()
+        if res.data:
+            return {"deck": res.data[0]}
+        return JSONResponse(status_code=404, content={"error": "Deck not found"})
+    except Exception as e:
+        return JSONResponse(status_code=500, content={"error": str(e)})
+
 @app.post("/api/process_text")
 async def process_text(request: Request):
     try:
         body = await request.json()
         text = body.get("text", "")
+        filename = body.get("filename", "Unknown Document")
+        
         if not text.strip():
             return JSONResponse(status_code=400, content={"error": "No text provided"})
             
         file_hash = get_text_hash(text)
         
-        # Cache text in Supabase
+        # Cache text in Supabase (now with filename!)
         if supabase:
             db_res = supabase.table("study_materials").select("file_hash").eq("file_hash", file_hash).execute()
             if not db_res.data:
                 supabase.table("study_materials").insert({
                     "file_hash": file_hash,
-                    "slide_text": text
+                    "slide_text": text,
+                    "filename": filename
                 }).execute()
 
         return {"text": text, "file_hash": file_hash}
     except Exception as e:
         return JSONResponse(status_code=500, content={"error": str(e)})
 
-# OLD ENDPOINT: Kept for backwards compatibility with PPTX files under 4.5MB
 @app.post("/api/upload")
 async def upload_file(file: UploadFile = File(...)):
     try:
         data = await file.read()
-        if file.filename.lower().endswith('.pdf') or data[:4] == b"%PDF":
+        filename = file.filename
+        
+        if filename.lower().endswith('.pdf') or data[:4] == b"%PDF":
             text = extract_text_pdf(data)
         else:
             text = extract_text_pptx(data)
@@ -106,7 +132,8 @@ async def upload_file(file: UploadFile = File(...)):
             if not db_res.data:
                 supabase.table("study_materials").insert({
                     "file_hash": file_hash,
-                    "slide_text": text
+                    "slide_text": text,
+                    "filename": filename
                 }).execute()
 
         return {"text": text, "file_hash": file_hash}
@@ -134,7 +161,7 @@ async def handle_ai(request: Request):
                 if db_res.data and db_res.data[0].get(generation_type):
                     return {"text": db_res.data[0][generation_type], "cached": True}
             except Exception as db_err:
-                print("Cache read error:", db_err) 
+                pass 
 
         payload = {
             "model": model, "max_tokens": 2048,

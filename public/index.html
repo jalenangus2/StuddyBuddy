@@ -42,7 +42,7 @@ input:focus{border-color:var(--gold)}
 .m-pill.active{border-color:var(--gold);background:rgba(196,146,42,.12);color:var(--brown)}
 .m-pill small{display:block;font-size:.68rem;opacity:.65;font-weight:400;margin-top:1px}
 
-/* Upload */
+/* Upload & Library */
 .upload-area{border:2px dashed var(--border);border-radius:14px;padding:44px 28px;text-align:center;cursor:pointer;transition:all .25s;background:var(--warm-white);margin-bottom:24px;position:relative}
 .upload-area:hover,.upload-area.dragover{border-color:var(--gold);background:rgba(196,146,42,.04)}
 .upload-area input[type="file"]{position:absolute;inset:0;opacity:0;cursor:pointer;width:100%;height:100%}
@@ -50,6 +50,10 @@ input:focus{border-color:var(--gold)}
 .upload-title{font-family:'Playfair Display',serif;font-size:1.15rem;font-weight:700;margin-bottom:6px}
 .upload-sub{color:var(--brown);font-size:.83rem}
 .file-badge{margin-top:12px;display:inline-flex;align-items:center;gap:6px;background:rgba(196,146,42,.12);color:var(--brown);padding:5px 12px;border-radius:20px;font-size:.82rem;font-weight:500}
+
+.library-grid { display: grid; gap: 12px; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); margin-bottom: 32px; }
+.lib-card { background: var(--warm-white); border: 1px solid var(--border); border-radius: 10px; padding: 16px; cursor: pointer; transition: all 0.2s; font-size: 0.9rem; font-weight: 500; display: flex; align-items: center; gap: 8px;}
+.lib-card:hover { border-color: var(--gold); background: rgba(196,146,42,.04); transform: translateY(-2px); }
 
 /* Tool tabs */
 .tools-section{display:none;margin-bottom:0}
@@ -204,7 +208,7 @@ input:focus{border-color:var(--gold)}
 @media print {
   .config-row,.upload-area,.tools-section,.loading,.score-banner,
   .sr-btns,.fc-nav,.fib-input-row,.chat-input-row,.chat-note,
-  .compare-upload,.progress-section,.no-print{display:none!important}
+  .compare-upload,.progress-section,.library-container,.no-print{display:none!important}
   .tab-panel{display:block!important}
   body{background:white}
   .result-card,.fc-wrapper,.glossary-item{break-inside:avoid}
@@ -246,6 +250,8 @@ input:focus{border-color:var(--gold)}
     <span>📎</span><span id="fileName"></span>
   </div>
 </div>
+
+<div id="libraryContainer" class="library-container"></div>
 
 <div class="loading" id="loading">
   <div class="spinner"></div>
@@ -460,6 +466,74 @@ let quizDifficulty = 'easy';
 
 const $ = id => document.getElementById(id);
 
+// ── Initialize Library ─────────────────────────────────────────
+document.addEventListener('DOMContentLoaded', loadLibrary);
+
+async function loadLibrary() {
+  try {
+    const res = await fetch('/api/library');
+    const data = await res.json();
+    if (data.decks && data.decks.length > 0) {
+      renderLibrary(data.decks);
+    }
+  } catch (err) {
+    console.log("Could not load library", err);
+  }
+}
+
+function renderLibrary(decks) {
+  const container = $('libraryContainer');
+  // Reverse to show newest first
+  const html = decks.reverse().map(d => 
+    `<div class="lib-card" onclick="loadDeckFromLibrary('${d.file_hash}', '${d.filename || 'Unknown Document'}')">
+       <span style="font-size:1.2rem">📄</span> ${d.filename || 'Unknown Document'}
+     </div>`
+  ).join('');
+  
+  container.innerHTML = `
+    <div class="divider"><span class="divider-lbl">📚 Your Library</span></div>
+    <div class="library-grid">${html}</div>
+  `;
+}
+
+async function loadDeckFromLibrary(hash, name) {
+  showLoading('Loading deck from library...');
+  try {
+    const res = await fetch('/api/load/' + hash);
+    const data = await res.json();
+    
+    if (data.error) throw new Error(data.error);
+    
+    const deck = data.deck;
+    slideText = deck.slide_text;
+    fileHash = hash;
+    deckName = name.replace(/\.[^.]+$/, '');
+    
+    $('fileName').textContent = name;
+    $('fileBadge').style.display = 'inline-flex';
+    $('toolsSection').style.display = 'block';
+    
+    // Auto-fill summary if it exists in DB to improve UX
+    if (deck.summary) {
+      $('summaryText').textContent = deck.summary;
+      $('summaryCard').style.display = 'block';
+    } else {
+      $('summaryCard').style.display = 'none';
+      $('summaryText').textContent = '';
+    }
+    
+    switchTab('summary');
+    loadWeakCards();
+    loadProgress();
+    hideError();
+    window.scrollTo({ top: $('toolsSection').offsetTop - 20, behavior: 'smooth' });
+    
+  } catch (e) {
+    showError("Could not load deck: " + e.message);
+  }
+  hideLoading();
+}
+
 // ── Tabs ──────────────────────────────────────────────────────
 function switchTab(tabId) {
   document.querySelectorAll('.tab-panel').forEach(p => p.classList.remove('active'));
@@ -486,7 +560,6 @@ ua.addEventListener('drop', e => {
 
 $('fileInput2').addEventListener('change', e => { const f = e.target.files[0]; if (f) handleUpload(f, true); });
 
-// NEW CLIENT-SIDE EXTRACTION LOGIC
 async function extractTextFromPDF(file) {
   const arrayBuffer = await file.arrayBuffer();
   const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
@@ -506,22 +579,19 @@ async function handleUpload(file, isSecond) {
     let text = "";
     let returnedFileHash = "";
 
-    // 1. If PDF, read it entirely in the browser to bypass Vercel limits
     if (file.name.toLowerCase().endsWith('.pdf')) {
         const extractedText = await extractTextFromPDF(file);
-        
-        // Send only the text to Vercel (extremely lightweight)
+        // Included filename in the request
         const res = await fetch('/api/process_text', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ text: extractedText })
+            body: JSON.stringify({ text: extractedText, filename: file.name })
         });
         const data = await res.json();
         if (data.error) throw new Error(data.error);
         text = data.text;
         returnedFileHash = data.file_hash;
     } 
-    // 2. If PPTX, fallback to backend parsing (works well for PPTX < 4.5MB)
     else {
         const fd = new FormData(); fd.append('file', file);
         const res = await fetch('/api/upload', { method: 'POST', body: fd });
@@ -543,9 +613,11 @@ async function handleUpload(file, isSecond) {
       $('fileName').textContent = file.name;
       $('fileBadge').style.display = 'inline-flex';
       $('toolsSection').style.display = 'block';
+      $('summaryCard').style.display = 'none'; // reset
       switchTab('summary');
       loadWeakCards();
       loadProgress();
+      loadLibrary(); // Refresh the library view so this new deck shows up!
     }
     hideLoading();
   } catch (err) {
