@@ -1,0 +1,5 @@
+fastapi
+python-multipart
+python-pptx
+pypdf
+supabase
