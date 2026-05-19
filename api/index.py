@@ -14,9 +14,11 @@ from supabase import create_client, Client
 app = FastAPI()
 
 # Securely load Environment Variables from Vercel
+# Securely load Environment Variables from Vercel
 ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
 SUPABASE_URL = os.environ.get("SUPABASE_URL", "")
-SUPABASE_KEY = os.environ.get("SUPABASE_KEY", "")
+# Updated to match Vercel's automatic naming:
+SUPABASE_KEY = os.environ.get("SUPABASE_ANON_KEY", os.environ.get("NEXT_PUBLIC_SUPABASE_ANON_KEY", ""))
 
 # Initialize Supabase
 supabase: Client = None
