@@ -513,13 +513,63 @@ async function loadDeckFromLibrary(hash, name) {
     $('fileBadge').style.display = 'inline-flex';
     $('toolsSection').style.display = 'block';
     
-    // Auto-fill summary if it exists in DB to improve UX
+    // 1. Auto-fill Summary
     if (deck.summary) {
       $('summaryText').textContent = deck.summary;
       $('summaryCard').style.display = 'block';
     } else {
       $('summaryCard').style.display = 'none';
-      $('summaryText').textContent = '';
+    }
+
+    // 2. Auto-fill Glossary
+    if (deck.glossary) {
+      const terms = parseJSON(deck.glossary);
+      const list = $('glossaryList');
+      list.innerHTML = '';
+      terms.forEach(t => {
+        const item = document.createElement('div');
+        item.className = 'glossary-item';
+        item.innerHTML = `<div class="glossary-term" onclick="this.parentElement.classList.toggle('open')">${t.term}<span class="g-arrow">▾</span></div><div class="glossary-def">${t.definition}</div>`;
+        list.appendChild(item);
+      });
+      $('glossaryCard').style.display = 'block';
+    } else {
+      $('glossaryCard').style.display = 'none';
+    }
+
+    // 3. Auto-fill Flashcards
+    if (deck.flashcards) {
+      flashcards = parseJSON(deck.flashcards);
+      currentCard = 0; cardFlipped = false;
+      applySpacedOrder();
+      renderCard();
+      $('flashcardSection').style.display = 'block';
+    } else {
+      $('flashcardSection').style.display = 'none';
+    }
+
+    // 4. Auto-fill Fill-in-Blank
+    if (deck.fillblank) {
+      fibQuestions = parseJSON(deck.fillblank);
+      fibAnswers = {};
+      rerenderFib();
+      $('fibSection').style.display = 'block';
+    } else {
+      $('fibSection').style.display = 'none';
+    }
+
+    // 5. Auto-fill Study Plan
+    if (deck.study_plan) {
+      const plan = JSON.parse(deck.study_plan.slice(deck.study_plan.indexOf('{'), deck.study_plan.lastIndexOf('}')+1));
+      const c = $('studyPlanContent');
+      c.innerHTML = `<p style="font-size:.88rem;color:var(--brown);margin-bottom:20px">Estimated study time: <strong>${plan.total_hours} hours</strong></p><div class="sp-timeline">`;
+      plan.days.forEach(day => {
+        c.innerHTML += `<div class="sp-day"><div class="sp-day-label">${day.label}</div>${day.tasks.map(t => `<div class="sp-task">📌 ${t}</div>`).join('')}</div>`;
+      });
+      c.innerHTML += '</div>';
+      $('studyPlanCard').style.display = 'block';
+    } else {
+      $('studyPlanCard').style.display = 'none';
     }
     
     switchTab('summary');
