@@ -5,6 +5,10 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>StudyBuddy</title>
 <link href="https://fonts.googleapis.com/css2?family=Playfair+Display:wght@400;700;900&family=DM+Sans:wght@300;400;500&display=swap" rel="stylesheet">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+<script>
+  pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+</script>
 <style>
 :root {
   --cream:#F7F3EE; --warm-white:#FDFAF7; --ink:#1A1510; --brown:#6B4C2A;
@@ -482,21 +486,59 @@ ua.addEventListener('drop', e => {
 
 $('fileInput2').addEventListener('change', e => { const f = e.target.files[0]; if (f) handleUpload(f, true); });
 
+// NEW CLIENT-SIDE EXTRACTION LOGIC
+async function extractTextFromPDF(file) {
+  const arrayBuffer = await file.arrayBuffer();
+  const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
+  let fullText = "";
+  for (let i = 1; i <= pdf.numPages; i++) {
+    const page = await pdf.getPage(i);
+    const content = await page.getTextContent();
+    const strings = content.items.map(item => item.str);
+    fullText += `[Page ${i}]\n` + strings.join(" ") + "\n\n";
+  }
+  return fullText;
+}
+
 async function handleUpload(file, isSecond) {
   showLoading(isSecond ? 'Reading second deck...' : 'Extracting slide text...');
-  const fd = new FormData(); fd.append('file', file);
   try {
-    const res = await fetch('/api/upload', { method: 'POST', body: fd });
-    const data = await res.json();
-    if (data.error) throw new Error(data.error);
+    let text = "";
+    let returnedFileHash = "";
+
+    // 1. If PDF, read it entirely in the browser to bypass Vercel limits
+    if (file.name.toLowerCase().endsWith('.pdf')) {
+        const extractedText = await extractTextFromPDF(file);
+        
+        // Send only the text to Vercel (extremely lightweight)
+        const res = await fetch('/api/process_text', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ text: extractedText })
+        });
+        const data = await res.json();
+        if (data.error) throw new Error(data.error);
+        text = data.text;
+        returnedFileHash = data.file_hash;
+    } 
+    // 2. If PPTX, fallback to backend parsing (works well for PPTX < 4.5MB)
+    else {
+        const fd = new FormData(); fd.append('file', file);
+        const res = await fetch('/api/upload', { method: 'POST', body: fd });
+        const data = await res.json();
+        if (data.error) throw new Error(data.error);
+        text = data.text;
+        returnedFileHash = data.file_hash;
+    }
+    
     if (isSecond) {
-      deck2Text = data.text;
+      deck2Text = text;
       $('fileName2').textContent = file.name;
       $('fileBadge2').style.display = 'inline-flex';
       $('btnCompare').disabled = false;
     } else {
-      slideText = data.text;
-      fileHash = data.file_hash;
+      slideText = text;
+      fileHash = returnedFileHash;
       deckName = file.name.replace(/\.[^.]+$/, '');
       $('fileName').textContent = file.name;
       $('fileBadge').style.display = 'inline-flex';
@@ -690,7 +732,6 @@ const diffPrompts = {
 };
 
 $('btnQuiz').addEventListener('click', () => run('Generating quiz...', async () => {
-  // Using dynamic types for caching allows caching different difficulties!
   const raw = await callAI(
     `You are a study assistant. ${diffPrompts[quizDifficulty]} Based on the following slide content, generate 8 multiple choice questions. Return ONLY valid JSON — no markdown, no explanation.\n\nFormat:\n[\n  {\n    "question": "...",\n    "options": ["A. ...", "B. ...", "C. ...", "D. ..."],\n    "answer": "A",\n    "explanation": "Brief explanation."\n  }\n]\n\nSlide content:\n${slideText}`,
     { type: `quiz_${quizDifficulty}` }

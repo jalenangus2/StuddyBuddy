@@ -18,7 +18,7 @@ ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
 SUPABASE_URL = os.environ.get("SUPABASE_URL", "")
 SUPABASE_KEY = os.environ.get("SUPABASE_KEY", "")
 
-# Initialize Supabase only if keys are present (prevents crashing if not set up yet)
+# Initialize Supabase
 supabase: Client = None
 if SUPABASE_URL and SUPABASE_KEY:
     supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
@@ -62,12 +62,35 @@ def anthropic_request(payload: dict, extra_headers: dict = None):
     with urllib.request.urlopen(req) as resp:
         return json.loads(resp.read())
 
+# NEW ENDPOINT: For handling client-extracted text (bypasses Vercel 4.5MB limit)
+@app.post("/api/process_text")
+async def process_text(request: Request):
+    try:
+        body = await request.json()
+        text = body.get("text", "")
+        if not text.strip():
+            return JSONResponse(status_code=400, content={"error": "No text provided"})
+            
+        file_hash = get_text_hash(text)
+        
+        # Cache text in Supabase
+        if supabase:
+            db_res = supabase.table("study_materials").select("file_hash").eq("file_hash", file_hash).execute()
+            if not db_res.data:
+                supabase.table("study_materials").insert({
+                    "file_hash": file_hash,
+                    "slide_text": text
+                }).execute()
+
+        return {"text": text, "file_hash": file_hash}
+    except Exception as e:
+        return JSONResponse(status_code=500, content={"error": str(e)})
+
+# OLD ENDPOINT: Kept for backwards compatibility with PPTX files under 4.5MB
 @app.post("/api/upload")
 async def upload_file(file: UploadFile = File(...)):
     try:
         data = await file.read()
-        
-        # Detect by magic bytes or filename
         if file.filename.lower().endswith('.pdf') or data[:4] == b"%PDF":
             text = extract_text_pdf(data)
         else:
@@ -78,7 +101,6 @@ async def upload_file(file: UploadFile = File(...)):
             
         file_hash = get_text_hash(text)
         
-        # Cache text in Supabase
         if supabase:
             db_res = supabase.table("study_materials").select("file_hash").eq("file_hash", file_hash).execute()
             if not db_res.data:
@@ -97,7 +119,7 @@ async def handle_ai(request: Request):
         body = await request.json()
         prompt = body.get("prompt", "")
         model = body.get("model", "claude-haiku-4-5-20251001")
-        generation_type = body.get("type") # 'summary', 'glossary', 'flashcards', etc.
+        generation_type = body.get("type") 
         file_hash = body.get("file_hash")
         
         if not ANTHROPIC_API_KEY:
@@ -106,17 +128,14 @@ async def handle_ai(request: Request):
         if model not in VALID_MODELS:
             model = "claude-haiku-4-5-20251001"
 
-        # 1. Check Supabase Cache
         if supabase and file_hash and generation_type:
-            # Ensure the column exists in your Supabase table for this generation_type
             try:
                 db_res = supabase.table("study_materials").select(generation_type).eq("file_hash", file_hash).execute()
                 if db_res.data and db_res.data[0].get(generation_type):
                     return {"text": db_res.data[0][generation_type], "cached": True}
             except Exception as db_err:
-                print("Cache read error:", db_err) # Fails silently if column doesn't exist yet
+                print("Cache read error:", db_err) 
 
-        # 2. Generate with AI
         payload = {
             "model": model, "max_tokens": 2048,
             "messages": [{"role": "user", "content": prompt}]
@@ -125,7 +144,6 @@ async def handle_ai(request: Request):
         data = anthropic_request(payload)
         generated_text = data["content"][0]["text"]
 
-        # 3. Save back to Supabase
         if supabase and file_hash and generation_type:
             try:
                 supabase.table("study_materials").update({
